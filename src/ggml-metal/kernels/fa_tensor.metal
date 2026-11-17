@@ -6,6 +6,7 @@ constant bool FC_flash_attn_ext_tensor_has_mask  [[function_constant(FC_FLASH_AT
 constant bool FC_flash_attn_ext_tensor_has_sinks [[function_constant(FC_FLASH_ATTN_EXT_TENSOR + 1)]];
 constant bool FC_flash_attn_ext_tensor_has_bias  [[function_constant(FC_FLASH_ATTN_EXT_TENSOR + 2)]];
 constant bool FC_flash_attn_ext_tensor_has_scap  [[function_constant(FC_FLASH_ATTN_EXT_TENSOR + 3)]];
+constant bool FC_flash_attn_ext_tensor_has_kvpad [[function_constant(FC_FLASH_ATTN_EXT_TENSOR + 4)]];
 
 // ref: https://arxiv.org/pdf/2307.08691.pdf
 template<
@@ -23,6 +24,7 @@ kernel void kernel_flash_attn_ext_tensor(
         device const char * v,
         device const char * mask,
         device const char * sinks,
+        device const char * pad,
         device const char * blk,
         device       char * dst,
         threadgroup  char * shmem [[threadgroup(0)]],
@@ -52,13 +54,15 @@ kernel void kernel_flash_attn_ext_tensor(
 
     q += iq1*args.nb01 + iq2*args.nb02 + iq3*args.nb03;
 
-    {
-        const int ikv2 = iq2/(args.ne02/args.ne_12_2);
-        const int ikv3 = iq3/(args.ne03/args.ne_12_3);
+    const int ikv2 = iq2/(args.ne02/args.ne_12_2);
+    const int ikv3 = iq3/(args.ne03/args.ne_12_3);
 
-        k += ikv2*args.nb12 + ikv3*args.nb13;
-        v += ikv2*args.nb22 + ikv3*args.nb23;
-    }
+    k += ikv2*args.nb12 + ikv3*args.nb13;
+    v += ikv2*args.nb22 + ikv3*args.nb23;
+
+    // partial last KV chunk, copied by kernel_flash_attn_ext_pad as [K | V] with C rows per KV head
+    device const char * k_pad = pad + (ikv2 + ikv3*args.ne_12_2)*args.nb11*C;
+    device const char * v_pad = pad + args.nb11*C*args.ne_12_2*args.ne_12_3 + (ikv2 + ikv3*args.ne_12_2)*args.nb21*C;
 
     // with softcap the scale is small (scale/softcap), so it is applied to the scores to keep the precision of Q
     const float qscale = FC_flash_attn_ext_tensor_has_scap ? 1.0f : args.scale;
@@ -142,8 +146,10 @@ kernel void kernel_flash_attn_ext_tensor(
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // the host guarantees ne11 % C == 0
+    // without has_kvpad the host guarantees ne11 % C == 0
     for (int ic0 = 0, ic = 0; ic < args.ne11; ++ic0, ic += C) {
+        const bool tail = FC_flash_attn_ext_tensor_has_kvpad && ic + C > args.ne11;
+
         char blk_cur = 1;
 
         if (FC_flash_attn_ext_tensor_has_mask) {
@@ -156,7 +162,9 @@ kernel void kernel_flash_attn_ext_tensor(
 
         // Q*K^T
         {
-            auto tk = tensor((device T *) (k + (uint64_t) ic*args.nb11), dextents<int32_t, 2>(DK, C), array<int, 2>({1, sk}));
+            device const char * kc = tail ? k_pad : k + (uint64_t) ic*args.nb11;
+
+            auto tk = tensor((device T *) kc, dextents<int32_t, 2>(DK, C), array<int, 2>({1, sk}));
 
             mm_qk.run(tq, tk, ts);
         }
@@ -181,7 +189,18 @@ kernel void kernel_flash_attn_ext_tensor(
 
             if (FC_flash_attn_ext_tensor_has_mask && blk_cur != 2 && iq1 + j < args.ne31) {
                 FOR_UNROLL (short ii = 0; ii < NC; ++ii) {
-                    s[ii] += slope*(float) pm[jj][ic + ii*NW + tiisg];
+                    if (!tail || ic + ii*NW + tiisg < args.ne11) {
+                        s[ii] += slope*(float) pm[jj][ic + ii*NW + tiisg];
+                    }
+                }
+            }
+
+            // exclude the pad rows after softcap, which would map -MAXHALF to a finite score
+            if (tail) {
+                FOR_UNROLL (short ii = 0; ii < NC; ++ii) {
+                    if (ic + ii*NW + tiisg >= args.ne11) {
+                        s[ii] = -MAXHALF;
+                    }
                 }
             }
 
@@ -235,7 +254,9 @@ kernel void kernel_flash_attn_ext_tensor(
         }
 
         {
-            auto tv = tensor((device T *) (v + (uint64_t) ic*args.nb21), dextents<int32_t, 2>(DV, C), array<int, 2>({1, sv}));
+            device const char * vc = tail ? v_pad : v + (uint64_t) ic*args.nb21;
+
+            auto tv = tensor((device T *) vc, dextents<int32_t, 2>(DV, C), array<int, 2>({1, sv}));
 
             mm_pv.run(tp, tv, co);
         }

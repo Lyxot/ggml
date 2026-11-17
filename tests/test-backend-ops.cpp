@@ -11714,6 +11714,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // KV length not a multiple of 64, with enough heads and queries for the Metal tensor-API kernel
+    for (ggml_type type_KV : {GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_Q8_0}) {
+        for (bool mask : {true, false}) {
+            test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, 1000, 128, mask, false, 0, 0, GGML_PREC_F32, type_KV, type_KV));
+        }
+    }
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, 1000, 128, true,  true,  0,    0,     GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, 1000, 128, true,  false, 8.0f, 0,     GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, 65,   128, false, false, 0,    1.0f,  GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 2}, 1000, 128, true,  false, 0,    0,     GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 2}, 1000, 128, false, false, 0,    0,     GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+
     // asymmetric head_dim (hsk != hsv) with one or both sides not 64-aligned
     test_cases.emplace_back(new test_flash_attn_ext(72, 64, 4, {1, 1}, 256, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(64, 72, 4, {1, 1}, 256, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
