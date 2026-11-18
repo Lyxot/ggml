@@ -132,7 +132,7 @@
 #define OP_FLASH_ATTN_EXT_TENSOR_NQPSG       32
 #define OP_FLASH_ATTN_EXT_TENSOR_NQPSG_LARGE 16
 #define OP_FLASH_ATTN_EXT_TENSOR_NCPSG       64
-#define OP_FLASH_ATTN_EXT_TENSOR_NSG         8
+#define OP_FLASH_ATTN_EXT_TENSOR_NSG         4 // 8 simdgroups (fewer rows each) ran up to 1.5x slower on M5
 
 #define OP_FLASH_ATTN_EXT_VEC_NQPSG 1
 #define OP_FLASH_ATTN_EXT_VEC_NCPSG 32
